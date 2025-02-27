@@ -1,193 +1,254 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.4;
+pragma solidity ^0.8.17;
 
-import "@openzeppelin/contracts/utils/Counters.sol";
-import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Counters.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 
-contract NFTMarketplace is ReentrancyGuard {
+/**
+ * @title NFTMarketplace
+ * @dev Implements a marketplace for trading NFTs with listing, buying, and cancellation functionality
+ */
+contract NFTMarketplace is ReentrancyGuard, Ownable {
     using Counters for Counters.Counter;
-    Counters.Counter private _itemIds;
-    Counters.Counter private _itemsSold;
-
-    address payable owner;
-    uint256 listingPrice = 0.025 ether;
-
-    constructor() {
-        owner = payable(msg.sender);
-    }
-
-    struct MarketItem {
-        uint256 itemId;
+    
+    // Counter for generating unique listing IDs
+    Counters.Counter private _listingIds;
+    
+    // Marketplace fee percentage (in basis points, 100 = 1%)
+    uint256 public marketplaceFeePercentage = 250; // 2.5%
+    
+    // Structure to store listing information
+    struct Listing {
+        uint256 listingId;
         address nftContract;
         uint256 tokenId;
         address payable seller;
         address payable owner;
         uint256 price;
         bool sold;
+        bool active;
     }
-
-    mapping(uint256 => MarketItem) private idToMarketItem;
-
-    event MarketItemCreated (
-        uint256 indexed itemId,
+    
+    // Mapping from listingId to Listing
+    mapping(uint256 => Listing) private _listings;
+    
+    // Events
+    event NFTListed(
+        uint256 indexed listingId,
         address indexed nftContract,
         uint256 indexed tokenId,
         address seller,
         address owner,
-        uint256 price,
-        bool sold
-    );
-    
-    event MarketItemSold (
-        uint256 indexed itemId,
-        address indexed buyer,
         uint256 price
     );
-
-    // View functions
-    function getListingPrice() public view returns (uint256) {
-        return listingPrice;
-    }
-
-    function getMarketItem(uint256 itemId) public view returns (MarketItem memory) {
-        return idToMarketItem[itemId];
-    }
-
-    function fetchMarketItems() public view returns (MarketItem[] memory) {
-        uint256 itemCount = _itemIds.current();
-        uint256 unsoldItemCount = _itemIds.current() - _itemsSold.current();
-        uint256 currentIndex = 0;
-
-        MarketItem[] memory items = new MarketItem[](unsoldItemCount);
-        
-        for (uint256 i = 0; i < itemCount; i++) {
-            if (idToMarketItem[i + 1].owner == address(0)) {
-                uint256 currentId = i + 1;
-                MarketItem storage currentItem = idToMarketItem[currentId];
-                items[currentIndex] = currentItem;
-                currentIndex += 1;
-            }
-        }
-        
-        return items;
-    }
-
-    function fetchMyNFTs() public view returns (MarketItem[] memory) {
-        uint256 totalItemCount = _itemIds.current();
-        uint256 itemCount = 0;
-        uint256 currentIndex = 0;
-
-        // Count user's items
-        for (uint256 i = 0; i < totalItemCount; i++) {
-            if (idToMarketItem[i + 1].owner == msg.sender) {
-                itemCount += 1;
-            }
-        }
-
-        MarketItem[] memory items = new MarketItem[](itemCount);
-        
-        for (uint256 i = 0; i < totalItemCount; i++) {
-            if (idToMarketItem[i + 1].owner == msg.sender) {
-                uint256 currentId = i + 1;
-                MarketItem storage currentItem = idToMarketItem[currentId];
-                items[currentIndex] = currentItem;
-                currentIndex += 1;
-            }
-        }
-        
-        return items;
-    }
-
-    // Create a market item (list an NFT)
-    function createMarketItem(
+    
+    event NFTSold(
+        uint256 indexed listingId,
+        address indexed nftContract,
+        uint256 indexed tokenId,
+        address seller,
+        address owner,
+        uint256 price
+    );
+    
+    event NFTListingCancelled(
+        uint256 indexed listingId,
+        address indexed nftContract,
+        uint256 indexed tokenId
+    );
+    
+    event MarketplaceFeeUpdated(
+        uint256 oldFee,
+        uint256 newFee
+    );
+    
+    /**
+     * @dev Creates a new listing for an NFT
+     * @param nftContract Address of the NFT contract
+     * @param tokenId Token ID of the NFT
+     * @param price Price at which the NFT is being listed
+     */
+    function createListing(
         address nftContract,
         uint256 tokenId,
         uint256 price
-    ) public payable nonReentrant {
-        require(price > 0, "Price must be at least 1 wei");
-        require(msg.value == listingPrice, "Price must be equal to listing price");
-
-        _itemIds.increment();
-        uint256 itemId = _itemIds.current();
-  
-        idToMarketItem[itemId] = MarketItem(
-            itemId,
+    ) external nonReentrant {
+        require(price > 0, "Price must be greater than zero");
+        
+        // Transfer NFT from seller to marketplace contract
+        IERC721(nftContract).transferFrom(msg.sender, address(this), tokenId);
+        
+        // Increment listing ID
+        _listingIds.increment();
+        uint256 listingId = _listingIds.current();
+        
+        // Create listing
+        _listings[listingId] = Listing(
+            listingId,
             nftContract,
             tokenId,
             payable(msg.sender),
-            payable(address(0)), // No owner yet (set to empty address)
+            payable(address(0)),
             price,
-            false
+            false,
+            true
         );
-
-        // Transfer NFT ownership to the marketplace contract
-        IERC721(nftContract).transferFrom(msg.sender, address(this), tokenId);
-
-        emit MarketItemCreated(
-            itemId,
-            nftContract,
-            tokenId,
-            msg.sender,
-            address(0),
-            price,
-            false
-        );
-    }
-
-    // Buy an NFT (create a market sale)
-    function createMarketSale(
-        address nftContract,
-        uint256 itemId
-    ) public payable nonReentrant {
-        uint256 price = idToMarketItem[itemId].price;
-        uint256 tokenId = idToMarketItem[itemId].tokenId;
-        address payable seller = idToMarketItem[itemId].seller;
         
-        require(msg.value == price, "Please submit the asking price to complete the purchase");
-        require(!idToMarketItem[itemId].sold, "Item is already sold");
-        require(idToMarketItem[itemId].owner == address(0), "Item is not for sale");
-
-        // Update state before external calls (prevents reentrancy)
-        idToMarketItem[itemId].owner = payable(msg.sender);
-        idToMarketItem[itemId].sold = true;
-        _itemsSold.increment();
+        emit NFTListed(listingId, nftContract, tokenId, msg.sender, address(0), price);
+    }
+    
+    /**
+     * @dev Executes a purchase of a listed NFT
+     * @param listingId ID of the listing to purchase
+     */
+    function buyNFT(uint256 listingId) external payable nonReentrant {
+        Listing storage listing = _listings[listingId];
+        
+        require(listing.listingId > 0, "Listing does not exist");
+        require(listing.active, "Listing is not active");
+        require(!listing.sold, "NFT already sold");
+        require(msg.value >= listing.price, "Insufficient funds sent");
+        
+        // Calculate and transfer marketplace fee
+        uint256 marketplaceFee = (listing.price * marketplaceFeePercentage) / 10000;
+        uint256 sellerProceeds = listing.price - marketplaceFee;
+        
+        // Update listing state
+        listing.sold = true;
+        listing.active = false;
+        listing.owner = payable(msg.sender);
         
         // Transfer NFT to buyer
-        IERC721(nftContract).transferFrom(address(this), msg.sender, tokenId);
+        IERC721(listing.nftContract).transferFrom(address(this), msg.sender, listing.tokenId);
         
-        // Transfer payment to seller
-        (bool sentToSeller, ) = seller.call{value: msg.value}("");
-        require(sentToSeller, "Failed to send payment to seller");
+        // Transfer funds to seller
+        (bool success, ) = listing.seller.call{value: sellerProceeds}("");
+        require(success, "Failed to send payment to seller");
         
-        // Transfer listing fee to contract owner
-        (bool sentToOwner, ) = owner.call{value: listingPrice}("");
-        require(sentToOwner, "Failed to send listing fee to marketplace owner");
+        // Refund excess payment if any
+        if (msg.value > listing.price) {
+            (bool refundSuccess, ) = payable(msg.sender).call{value: msg.value - listing.price}("");
+            require(refundSuccess, "Failed to refund excess payment");
+        }
         
-        emit MarketItemSold(itemId, msg.sender, price);
+        emit NFTSold(listingId, listing.nftContract, listing.tokenId, listing.seller, msg.sender, listing.price);
     }
     
-    // Allow marketplace owner to update listing price
-    function updateListingPrice(uint256 _listingPrice) public {
-        require(msg.sender == owner, "Only marketplace owner can update listing price");
-        listingPrice = _listingPrice;
-    }
-    
-    // Allow sellers to cancel listings and get their NFTs back
-    function cancelMarketItem(uint256 itemId) public nonReentrant {
-        require(idToMarketItem[itemId].seller == msg.sender, "Only seller can cancel listing");
-        require(!idToMarketItem[itemId].sold, "Sold items cannot be canceled");
+    /**
+     * @dev Cancels an active listing
+     * @param listingId ID of the listing to cancel
+     */
+    function cancelListing(uint256 listingId) external nonReentrant {
+        Listing storage listing = _listings[listingId];
         
-        uint256 tokenId = idToMarketItem[itemId].tokenId;
-        address nftContract = idToMarketItem[itemId].nftContract;
+        require(listing.listingId > 0, "Listing does not exist");
+        require(listing.active, "Listing is not active");
+        require(!listing.sold, "NFT already sold");
+        require(listing.seller == msg.sender, "Only seller can cancel listing");
+        
+        // Update listing state
+        listing.active = false;
         
         // Transfer NFT back to seller
-        IERC721(nftContract).transferFrom(address(this), msg.sender, tokenId);
+        IERC721(listing.nftContract).transferFrom(address(this), msg.sender, listing.tokenId);
         
-        // Update item state
-        idToMarketItem[itemId].sold = true;
-        _itemsSold.increment();
+        emit NFTListingCancelled(listingId, listing.nftContract, listing.tokenId);
+    }
+    
+    /**
+     * @dev Updates the marketplace fee percentage
+     * @param newFeePercentage New fee percentage (in basis points)
+     */
+    function setMarketplaceFeePercentage(uint256 newFeePercentage) external onlyOwner {
+        require(newFeePercentage <= 1000, "Fee percentage cannot exceed 10%");
         
-        // Note: Listing fee is not refunded as per marketplace policy
+        uint256 oldFee = marketplaceFeePercentage;
+        marketplaceFeePercentage = newFeePercentage;
+        
+        emit MarketplaceFeeUpdated(oldFee, newFeePercentage);
+    }
+    
+    /**
+     * @dev Withdraws accumulated marketplace fees to the owner
+     */
+    function withdrawMarketplaceFees() external onlyOwner {
+        uint256 balance = address(this).balance;
+        require(balance > 0, "No funds to withdraw");
+        
+        (bool success, ) = payable(owner()).call{value: balance}("");
+        require(success, "Failed to withdraw marketplace fees");
+    }
+    
+    /**
+     * @dev Returns details of a specific listing
+     * @param listingId ID of the listing to query
+     * @return Listing details
+     */
+    function getListing(uint256 listingId) external view returns (Listing memory) {
+        return _listings[listingId];
+    }
+    
+    /**
+     * @dev Returns the current number of listings (including sold and inactive)
+     * @return Total number of listings
+     */
+    function getListingCount() external view returns (uint256) {
+        return _listingIds.current();
+    }
+    
+    /**
+     * @dev Returns a batch of listings within a range
+     * @param start Starting index
+     * @param count Number of listings to return
+     * @return Array of listings
+     */
+    function getListingBatch(uint256 start, uint256 count) external view returns (Listing[] memory) {
+        require(start > 0 && start <= _listingIds.current(), "Invalid start index");
+        require(count > 0, "Count must be greater than zero");
+        
+        uint256 end = start + count - 1;
+        if (end > _listingIds.current()) {
+            end = _listingIds.current();
+        }
+        
+        Listing[] memory batchListings = new Listing[](end - start + 1);
+        
+        for (uint256 i = start; i <= end; i++) {
+            batchListings[i - start] = _listings[i];
+        }
+        
+        return batchListings;
+    }
+    
+    /**
+     * @dev Returns active listings by a specific seller
+     * @param seller Address of the seller
+     * @return Array of active listings by the seller
+     */
+    function getListingsBySeller(address seller) external view returns (Listing[] memory) {
+        uint256 totalListings = _listingIds.current();
+        uint256 sellerListingCount = 0;
+        
+        // Count seller's active listings
+        for (uint256 i = 1; i <= totalListings; i++) {
+            if (_listings[i].seller == seller && _listings[i].active && !_listings[i].sold) {
+                sellerListingCount++;
+            }
+        }
+        
+        Listing[] memory sellerListings = new Listing[](sellerListingCount);
+        uint256 index = 0;
+        
+        // Populate array with seller's listings
+        for (uint256 i = 1; i <= totalListings && index < sellerListingCount; i++) {
+            if (_listings[i].seller == seller && _listings[i].active && !_listings[i].sold) {
+                sellerListings[index] = _listings[i];
+                index++;
+            }
+        }
+        
+        return sellerListings;
     }
 }
