@@ -310,4 +310,220 @@ exports.listNFTForSale = async (req, res, next) => {
     nft.price = price;
     nft.listingId = listingId;
     
-    await nft
+    await nft.save();
+    
+    res.status(200).json({
+      success: true,
+      data: nft
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Buy an NFT
+ * @route   POST /api/nft/:id/buy
+ * @access  Private
+ */
+exports.buyNFT = async (req, res, next) => {
+  try {
+    const nft = await NFT.findById(req.params.id);
+    
+    if (!nft) {
+      return res.status(404).json({
+        success: false,
+        error: 'NFT not found'
+      });
+    }
+    
+    // Check if NFT is listed for sale
+    if (nft.status !== 'listed') {
+      return res.status(400).json({
+        success: false,
+        error: 'This NFT is not listed for sale'
+      });
+    }
+    
+    // Cannot buy your own NFT
+    if (nft.owner.toString() === req.user.id) {
+      return res.status(400).json({
+        success: false,
+        error: 'You cannot buy your own NFT'
+      });
+    }
+    
+    // Execute purchase on blockchain
+    const transaction = await contractInteraction.buyNFT(
+      req.user.address,
+      nft.listingId,
+      nft.price
+    );
+    
+    // Record transaction in history
+    nft.history.push({
+      type: 'sale',
+      from: nft.owner,
+      to: req.user.id,
+      price: nft.price,
+      date: new Date(),
+      transactionHash: transaction.hash
+    });
+    
+    // Update ownership
+    nft.owner = req.user.id;
+    nft.status = 'owned';
+    nft.listingId = null;
+    
+    await nft.save();
+    
+    // Update user's owned NFTs
+    await User.findByIdAndUpdate(req.user.id, {
+      $push: { ownedNFTs: nft._id }
+    });
+    
+    res.status(200).json({
+      success: true,
+      data: nft
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Cancel NFT listing
+ * @route   POST /api/nft/:id/cancel
+ * @access  Private
+ */
+exports.cancelListing = async (req, res, next) => {
+  try {
+    const nft = await NFT.findById(req.params.id);
+    
+    if (!nft) {
+      return res.status(404).json({
+        success: false,
+        error: 'NFT not found'
+      });
+    }
+    
+    // Verify ownership
+    if (nft.owner.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        error: 'You are not the owner of this NFT'
+      });
+    }
+    
+    // Check if NFT is listed
+    if (nft.status !== 'listed' || !nft.listingId) {
+      return res.status(400).json({
+        success: false,
+        error: 'This NFT is not currently listed'
+      });
+    }
+    
+    // Cancel listing on blockchain
+    await contractInteraction.cancelListing(
+      req.user.address,
+      nft.listingId
+    );
+    
+    // Update NFT in database
+    nft.status = 'owned';
+    nft.listingId = null;
+    
+    await nft.save();
+    
+    res.status(200).json({
+      success: true,
+      data: nft
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Get NFTs created by a user
+ * @route   GET /api/nft/created/:userId
+ * @access  Public
+ */
+exports.getCreatedNFTs = async (req, res, next) => {
+  try {
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 12;
+    const startIndex = (page - 1) * limit;
+    
+    const userId = req.params.userId;
+    
+    // Count total documents
+    const total = await NFT.countDocuments({ creator: userId });
+    
+    const nfts = await NFT.find({ creator: userId })
+      .sort({ createdAt: -1 })
+      .skip(startIndex)
+      .limit(limit)
+      .populate('creator', 'username address profileImage')
+      .populate('owner', 'username address profileImage');
+    
+    const pagination = {
+      total,
+      pages: Math.ceil(total / limit),
+      page,
+      limit
+    };
+    
+    res.status(200).json({
+      success: true,
+      count: nfts.length,
+      pagination,
+      data: nfts
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Get NFTs owned by a user
+ * @route   GET /api/nft/owned/:userId
+ * @access  Public
+ */
+exports.getOwnedNFTs = async (req, res, next) => {
+  try {
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 12;
+    const startIndex = (page - 1) * limit;
+    
+    const userId = req.params.userId;
+    
+    // Count total documents
+    const total = await NFT.countDocuments({ owner: userId });
+    
+    const nfts = await NFT.find({ owner: userId })
+      .sort({ createdAt: -1 })
+      .skip(startIndex)
+      .limit(limit)
+      .populate('creator', 'username address profileImage')
+      .populate('owner', 'username address profileImage');
+    
+    const pagination = {
+      total,
+      pages: Math.ceil(total / limit),
+      page,
+      limit
+    };
+    
+    res.status(200).json({
+      success: true,
+      count: nfts.length,
+      pagination,
+      data: nfts
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = exports;
