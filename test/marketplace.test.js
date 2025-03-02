@@ -223,5 +223,8 @@ describe("NFT Marketplace", function () {
         marketplace.connect(addr1).cancelMarketItem(1)
       ).to.be.revertedWith("Only seller can cancel listing");
     });
+    it("should fail to buy NFT with insufficient funds", async () => {
+    await expect(nftMarketplace.buyNFT(1, { value: 0 })).to.be.revertedWith("Insufficient funds");
+    });
   });
 });
