@@ -8,6 +8,7 @@ const ListedNFTs = () => {
   const [nfts, setNfts] = useState([]);
   const [nftsCopy, setNftsCopy] = useState([]);
   const [activeSelect, setActiveSelect] = useState('Recently Added');
+  const filteredNFTs = nfts.filter(nft => nft.price <= maxPrice && nft.category === selectedCategory);
 
   useEffect(() => {
     fetchMyNFTsOrListedNFTs('fetchItemsListed')
