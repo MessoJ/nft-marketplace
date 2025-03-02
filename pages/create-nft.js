@@ -112,4 +112,19 @@ const CreateNFT = () => {
           inputType="number"
           title="Price"
           placeholder="NFT Price"
-          handleChange={(e) => setFormInput({ ...formInput,
+          handleChange={(e) => setFormInput({ ...formInput, price: e.target.value })}
+        />
+
+        <div className="mt-7 w-full flex justify-end">
+          <Button
+            btnName="Create NFT"
+            classStyles="rounded-xl"
+            handleClick={() => createNFT(formInput, fileUrl, router)}
+          />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default CreateNFT;
